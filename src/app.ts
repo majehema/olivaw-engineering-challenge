@@ -2,10 +2,13 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { DatabaseSync } from "node:sqlite";
 import { healthRoutes } from "./api/health.ts";
 import { telemetryRoutes } from "./api/telemetry.ts";
+import { AlertService } from "./application/alert-service.ts";
 import { systemClock, type Clock } from "./application/clock.ts";
 import { FleetStore } from "./application/fleet-store.ts";
 import { IngestionService } from "./application/ingestion-service.ts";
+import { Watchdog } from "./application/watchdog.ts";
 import { DEFAULT_RULES, type Rules } from "./domain/rules.ts";
+import { AlertRepository } from "./storage/alert-repository.ts";
 import { RobotRepository } from "./storage/robot-repository.ts";
 import { TelemetryRepository } from "./storage/telemetry-repository.ts";
 
@@ -14,6 +17,7 @@ export type AppOptions = {
   logLevel?: string;
   clock?: Clock;
   rules?: Rules;
+  watchdogIntervalMs?: number;
 };
 
 // Composition root: wires storage, application services and routes.
@@ -24,13 +28,21 @@ export function buildApp({
   logLevel = "info",
   clock = systemClock,
   rules = DEFAULT_RULES,
+  watchdogIntervalMs = 1_000,
 }: AppOptions): FastifyInstance {
+  const app = Fastify({ logger: { level: logLevel } });
+  const logger = app.log;
+
   const telemetry = new TelemetryRepository(db);
   const robots = new RobotRepository(db);
   const store = FleetStore.restore(robots.loadAll(), clock(), rules);
-  const ingestion = new IngestionService({ db, store, telemetry, robots, clock, rules });
+  const alerts = new AlertService({ alerts: new AlertRepository(db), rules });
+  const ingestion = new IngestionService({ db, store, telemetry, robots, alerts, clock, rules, logger });
+  const watchdog = new Watchdog({ db, store, alerts, clock, rules, logger });
 
-  const app = Fastify({ logger: { level: logLevel } });
+  app.addHook("onReady", async () => watchdog.start(watchdogIntervalMs));
+  app.addHook("onClose", async () => watchdog.stop());
+
   app.register(healthRoutes, { db });
   app.register(telemetryRoutes, { ingestion });
 

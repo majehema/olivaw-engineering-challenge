@@ -1,9 +1,12 @@
+import type { Logger } from "../src/application/logger.ts";
 import type { Alert } from "../src/domain/alerts.ts";
 import type { RobotState } from "../src/domain/fleet-state.ts";
 import type { Telemetry } from "../src/domain/telemetry.ts";
 
 /** Fixed reference time for deterministic tests. */
 export const T0 = Date.parse("2026-01-01T12:00:00Z");
+
+export const silentLogger: Logger = { info: () => {}, warn: () => {}, error: () => {} };
 
 export function makeTelemetry(overrides: Partial<Telemetry> = {}): Telemetry {
   return {

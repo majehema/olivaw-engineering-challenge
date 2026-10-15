@@ -5,8 +5,10 @@ import type { Telemetry } from "../domain/telemetry.ts";
 import type { RobotRepository } from "../storage/robot-repository.ts";
 import type { TelemetryRepository } from "../storage/telemetry-repository.ts";
 import { transaction } from "../storage/transaction.ts";
+import { logAlertEvent, type AlertService } from "./alert-service.ts";
 import type { Clock } from "./clock.ts";
 import type { FleetStore } from "./fleet-store.ts";
+import type { Logger } from "./logger.ts";
 
 export type IngestSummary = {
   /** Newer than the robot's snapshot: stored and applied. */
@@ -24,8 +26,10 @@ export type IngestionDependencies = {
   store: FleetStore;
   telemetry: TelemetryRepository;
   robots: RobotRepository;
+  alerts: AlertService;
   clock: Clock;
   rules: Rules;
+  logger: Logger;
 };
 
 export class IngestionService {
@@ -36,7 +40,7 @@ export class IngestionService {
   }
 
   ingest(messages: readonly Telemetry[]): IngestSummary {
-    const { db, store, telemetry, robots, clock, rules } = this.deps;
+    const { db, store, telemetry, robots, alerts, clock, rules, logger } = this.deps;
     const now = clock();
     const summary: IngestSummary = { accepted: 0, late: 0, duplicates: 0, rejected: [] };
 
@@ -44,7 +48,7 @@ export class IngestionService {
     // so each one is classified against the result of the previous one.
     const updated = new Map<string, RobotState>();
 
-    transaction(db, () => {
+    const alertEvents = transaction(db, () => {
       messages.forEach((message, index) => {
         const current = updated.get(message.robotId) ?? store.get(message.robotId);
         const outcome = ingestTelemetry(current, message, now, rules);
@@ -65,10 +69,15 @@ export class IngestionService {
         robots.save(outcome.state);
         updated.set(outcome.state.robotId, outcome.state);
       });
+
+      // Once per robot, on its final state: a batch where the battery dips and
+      // recovers should not open and immediately resolve an alert.
+      return [...updated.values()].flatMap((state) => alerts.evaluate(state, now));
     });
 
-    // Only after the commit, so memory never shows data the database does not have.
+    // Only after the commit, so memory and logs never show what the database does not have.
     updated.forEach((state) => store.set(state));
+    alertEvents.forEach((event) => logAlertEvent(logger, event));
     return summary;
   }
 }

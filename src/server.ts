@@ -4,7 +4,12 @@ import { openDatabase } from "./storage/database.ts";
 
 const config = loadConfig();
 const db = openDatabase(config.databasePath);
-const app = buildApp({ db, logLevel: config.logLevel });
+const app = buildApp({
+  db,
+  logLevel: config.logLevel,
+  rules: config.rules,
+  watchdogIntervalMs: config.watchdogIntervalMs,
+});
 
 // Graceful shutdown: stop accepting connections, let in-flight requests finish,
 // then close the database so no write is cut in half.

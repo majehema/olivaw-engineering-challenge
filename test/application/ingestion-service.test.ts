@@ -1,27 +1,33 @@
 import { describe, expect, it } from "vitest";
+import { AlertService } from "../../src/application/alert-service.ts";
 import { FleetStore } from "../../src/application/fleet-store.ts";
 import { IngestionService } from "../../src/application/ingestion-service.ts";
 import { DEFAULT_RULES } from "../../src/domain/rules.ts";
+import { AlertRepository } from "../../src/storage/alert-repository.ts";
 import { IN_MEMORY, openDatabase } from "../../src/storage/database.ts";
 import { RobotRepository } from "../../src/storage/robot-repository.ts";
 import { TelemetryRepository } from "../../src/storage/telemetry-repository.ts";
-import { makeTelemetry, T0 } from "../fixtures.ts";
+import { makeAlert, makeTelemetry, silentLogger, T0 } from "../fixtures.ts";
 
 function setup() {
   const db = openDatabase(IN_MEMORY);
   const store = new FleetStore();
   const telemetry = new TelemetryRepository(db);
   const robots = new RobotRepository(db);
+  const alertRepository = new AlertRepository(db);
+  const alertService = new AlertService({ alerts: alertRepository, rules: DEFAULT_RULES });
   const clock = { now: T0 };
   const service = new IngestionService({
     db,
     store,
     telemetry,
     robots,
+    alerts: alertService,
     clock: () => clock.now,
     rules: DEFAULT_RULES,
+    logger: silentLogger,
   });
-  return { db, store, telemetry, robots, clock, service };
+  return { db, store, telemetry, robots, alertRepository, alertService, clock, service };
 }
 
 const at = (seconds: number, overrides = {}) => makeTelemetry({ timestamp: T0 + seconds * 1_000, ...overrides });
@@ -97,6 +103,53 @@ describe("IngestionService", () => {
       ["a", T0 + 1_000],
       ["b", T0],
     ]);
+  });
+
+  describe("alerts", () => {
+    const alertTypes = (repository: AlertRepository) => repository.listOpen().map((alert) => alert.type);
+
+    it("opens an alert when a message breaks a rule", () => {
+      const { service, alertRepository } = setup();
+
+      service.ingest([at(0, { battery: 15 })]);
+
+      expect(alertRepository.listOpen()).toEqual([
+        expect.objectContaining({ type: "LOW_BATTERY", severity: "warning", openedAt: T0 }),
+      ]);
+    });
+
+    it("evaluates alerts once per robot on its final state in the batch", () => {
+      const { service, alertRepository } = setup();
+
+      service.ingest([at(0, { battery: 15 }), at(1, { battery: 90 })]);
+
+      expect(alertRepository.list({ limit: 10 })).toEqual([]);
+    });
+
+    it("resolves an OFFLINE alert when the robot reports again, even with late data", () => {
+      const { service, alertRepository, clock } = setup();
+      service.ingest([at(10)]);
+      alertRepository.insert(makeAlert({ type: "OFFLINE", severity: "critical" }));
+      clock.now = T0 + 60_000;
+
+      service.ingest([at(5)]);
+
+      expect(alertTypes(alertRepository)).toEqual([]);
+    });
+
+    it("rolls back alerts together with the telemetry when the batch fails", () => {
+      const { service, alertService, alertRepository, telemetry } = setup();
+      // Fail right after the alert has been written, as the last step of the transaction.
+      const evaluate = alertService.evaluate.bind(alertService);
+      alertService.evaluate = (...args) => {
+        evaluate(...args);
+        throw new Error("disk full");
+      };
+
+      expect(() => service.ingest([at(0, { battery: 5 })])).toThrow("disk full");
+      expect(alertTypes(alertRepository)).toEqual([]);
+      expect(telemetry.history("robot-1", { limit: 10 })).toEqual([]);
+    });
   });
 
   it("leaves memory untouched when the database write fails", () => {

@@ -24,6 +24,7 @@ export class AlertRepository {
   private readonly escalateStatement: StatementSync;
   private readonly resolveStatement: StatementSync;
   private readonly listOpenStatement: StatementSync;
+  private readonly listOpenForRobotStatement: StatementSync;
   private readonly listStatement: StatementSync;
 
   constructor(db: DatabaseSync) {
@@ -41,6 +42,10 @@ export class AlertRepository {
     `);
     this.listOpenStatement = db.prepare(`
       SELECT ${COLUMNS} FROM alerts WHERE resolved_at IS NULL
+    `);
+    // Served by the partial unique index on (robot_id, type) WHERE resolved_at IS NULL.
+    this.listOpenForRobotStatement = db.prepare(`
+      SELECT ${COLUMNS} FROM alerts WHERE robot_id = :robotId AND resolved_at IS NULL
     `);
     this.listStatement = db.prepare(`
       SELECT ${COLUMNS} FROM alerts
@@ -72,6 +77,10 @@ export class AlertRepository {
 
   listOpen(): Alert[] {
     return (this.listOpenStatement.all() as AlertRow[]).map(toAlert);
+  }
+
+  listOpenForRobot(robotId: string): Alert[] {
+    return (this.listOpenForRobotStatement.all({ robotId }) as AlertRow[]).map(toAlert);
   }
 
   /** Alerts matching the query, most recently opened first. */
