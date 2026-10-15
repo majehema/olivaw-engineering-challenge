@@ -125,7 +125,12 @@ sequenceDiagram
 
 ### 4.2 Connectivity watchdog
 
-A timer runs every second and re-evaluates every robot's connectivity using the **server's receive time**, never the robot's clock.
+A silent robot produces no message, so something has to look at the clock: a timer runs every second and re-evaluates every robot's connectivity using the **server's receive time**, never the robot's clock.
+
+- Only robots whose connectivity **changed** on this tick have their alerts evaluated, so a quiet fleet costs no database work.
+- Alert changes are written in one transaction per tick; the in-memory state is updated after the commit.
+- A failing tick is logged and retried on the next one; it never crashes the process.
+- **Startup grace period:** for `offlineAfterMs` after startup, the watchdog does not open new `OFFLINE` alerts (see *Restart behaviour*). When the period ends, every robot is evaluated once, so robots that are still silent get their alert.
 
 ```mermaid
 stateDiagram-v2
@@ -270,20 +275,28 @@ All rules live in `src/domain/` as **pure functions with an injected clock**, so
 - **Hysteresis** prevents an alert from flapping when the battery hovers around the threshold (19.9 % → 20.1 % → 19.8 %…).
 - **Severity only escalates** while an alert is open: it records the worst state reached. The robot's current battery is always available on the robot itself.
 - Rules are **idempotent**: evaluating the same state twice yields no changes, so they run on every message and on every watchdog tick.
+- **Open alerts live only in the database.** Each evaluation reads a robot's open alerts with an indexed lookup, so there is no in-memory copy that could disagree with it.
+- During ingestion, alerts are evaluated **once per robot per batch**, on its final state: a batch where the battery dips and recovers does not open and immediately resolve an alert.
 
 ### 6.4 Configuration
 
-All thresholds live in one config module and can be overridden with environment variables:
+Everything is configured with environment variables (`src/config.ts`):
 
-| Variable | Default |
-|---|---|
-| `STALE_AFTER_MS` | `5000` |
-| `OFFLINE_AFTER_MS` | `30000` |
-| `MAX_CLOCK_SKEW_MS` | `30000` |
-| `BATTERY_WARNING_PCT` | `20` |
-| `BATTERY_CRITICAL_PCT` | `10` |
-| `BATTERY_RECOVERY_PCT` | `25` |
-| `WATCHDOG_INTERVAL_MS` | `1000` |
+| Variable | Default | Notes |
+|---|---|---|
+| `PORT` | `3000` | |
+| `HOST` | `0.0.0.0` | Reachable from outside a container |
+| `LOG_LEVEL` | `info` | |
+| `DATABASE_PATH` | `data/fleet.db` | Directory is created if missing |
+| `STALE_AFTER_MS` | `5000` | Must be lower than `OFFLINE_AFTER_MS` |
+| `OFFLINE_AFTER_MS` | `30000` | Also the startup grace period |
+| `MAX_CLOCK_SKEW_MS` | `30000` | |
+| `BATTERY_WARNING_PCT` | `20` | |
+| `BATTERY_CRITICAL_PCT` | `10` | Must be lower than the warning threshold |
+| `BATTERY_RECOVERY_PCT` | `25` | Must not be lower than the warning threshold |
+| `WATCHDOG_INTERVAL_MS` | `1000` | |
+
+Invalid values, or thresholds that contradict each other, **stop the server at startup** with a clear error instead of misbehaving later.
 
 ## 7. API
 
