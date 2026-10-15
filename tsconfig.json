@@ -1,0 +1,19 @@
+{
+  // Node.js runs the .ts sources directly (type stripping), so tsc is only
+  // used for type checking and never emits JavaScript.
+  // https://nodejs.org/api/typescript.html#type-stripping
+  "compilerOptions": {
+    "target": "esnext",
+    "module": "nodenext",
+    "noEmit": true,
+    "allowImportingTsExtensions": true,
+    "verbatimModuleSyntax": true,
+    "erasableSyntaxOnly": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "skipLibCheck": true,
+    "types": ["node"]
+  },
+  "include": ["src", "test"]
+}
