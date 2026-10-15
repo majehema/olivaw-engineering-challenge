@@ -7,6 +7,7 @@ import { robotRoutes } from "./api/robots.ts";
 import { telemetryRoutes } from "./api/telemetry.ts";
 import { AlertService } from "./application/alert-service.ts";
 import { systemClock, type Clock } from "./application/clock.ts";
+import { EventBus, logFleetEvent } from "./application/event-bus.ts";
 import { FleetQueries } from "./application/fleet-queries.ts";
 import { FleetStore } from "./application/fleet-store.ts";
 import { IngestionService } from "./application/ingestion-service.ts";
@@ -22,6 +23,8 @@ export type AppOptions = {
   clock?: Clock;
   rules?: Rules;
   watchdogIntervalMs?: number;
+  /** Injectable so tests can observe subscriptions. */
+  events?: EventBus;
 };
 
 // Composition root: wires storage, application services and routes.
@@ -33,17 +36,20 @@ export function buildApp({
   clock = systemClock,
   rules = DEFAULT_RULES,
   watchdogIntervalMs = 1_000,
+  events: injectedEvents,
 }: AppOptions): FastifyInstance {
   const app = Fastify({ logger: { level: logLevel } });
   const logger = app.log;
+  const events = injectedEvents ?? new EventBus(logger);
+  events.subscribe((event) => logFleetEvent(logger, event));
 
   const telemetry = new TelemetryRepository(db);
   const robots = new RobotRepository(db);
   const alertRepository = new AlertRepository(db);
   const store = FleetStore.restore(robots.loadAll(), clock(), rules);
   const alerts = new AlertService({ alerts: alertRepository, rules });
-  const ingestion = new IngestionService({ db, store, telemetry, robots, alerts, clock, rules, logger });
-  const watchdog = new Watchdog({ db, store, alerts, clock, rules, logger });
+  const ingestion = new IngestionService({ db, store, telemetry, robots, alerts, clock, rules, events });
+  const watchdog = new Watchdog({ db, store, alerts, clock, rules, events, logger });
   const queries = new FleetQueries({ store, telemetry, alerts: alertRepository });
 
   app.addHook("onReady", async () => watchdog.start(watchdogIntervalMs));

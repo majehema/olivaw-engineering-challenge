@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AlertService } from "../../src/application/alert-service.ts";
+import { EventBus, type FleetEvent } from "../../src/application/event-bus.ts";
 import { FleetStore } from "../../src/application/fleet-store.ts";
 import { IngestionService } from "../../src/application/ingestion-service.ts";
 import { DEFAULT_RULES } from "../../src/domain/rules.ts";
@@ -17,6 +18,9 @@ function setup() {
   const alertRepository = new AlertRepository(db);
   const alertService = new AlertService({ alerts: alertRepository, rules: DEFAULT_RULES });
   const clock = { now: T0 };
+  const events = new EventBus(silentLogger);
+  const published: FleetEvent[] = [];
+  events.subscribe((event) => published.push(event));
   const service = new IngestionService({
     db,
     store,
@@ -25,9 +29,9 @@ function setup() {
     alerts: alertService,
     clock: () => clock.now,
     rules: DEFAULT_RULES,
-    logger: silentLogger,
+    events,
   });
-  return { db, store, telemetry, robots, alertRepository, alertService, clock, service };
+  return { db, store, telemetry, robots, alertRepository, alertService, clock, service, published };
 }
 
 const at = (seconds: number, overrides = {}) => makeTelemetry({ timestamp: T0 + seconds * 1_000, ...overrides });
@@ -149,6 +153,33 @@ describe("IngestionService", () => {
       expect(() => service.ingest([at(0, { battery: 5 })])).toThrow("disk full");
       expect(alertTypes(alertRepository)).toEqual([]);
       expect(telemetry.history("robot-1", { limit: 10 })).toEqual([]);
+    });
+  });
+
+  describe("events", () => {
+    it("publishes the robot update and its alerts after the commit", () => {
+      const { service, published } = setup();
+
+      service.ingest([at(0, { battery: 15 })]);
+
+      expect(published.map((event) => event.type)).toEqual(["robot.updated", "alert.opened"]);
+      expect(published[0]).toMatchObject({ robot: { robotId: "robot-1", lastTelemetry: at(0, { battery: 15 }) } });
+    });
+
+    it("publishes one update per robot per batch, with its final state", () => {
+      const { service, published } = setup();
+
+      service.ingest([at(0), at(2), at(1)]);
+
+      expect(published).toEqual([{ type: "robot.updated", robot: expect.objectContaining({ lastTelemetry: at(2) }) }]);
+    });
+
+    it("publishes nothing when the batch is rolled back", () => {
+      const { service, published, db } = setup();
+      db.close();
+
+      expect(() => service.ingest([at(0)])).toThrow();
+      expect(published).toEqual([]);
     });
   });
 

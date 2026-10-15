@@ -5,10 +5,10 @@ import type { Telemetry } from "../domain/telemetry.ts";
 import type { RobotRepository } from "../storage/robot-repository.ts";
 import type { TelemetryRepository } from "../storage/telemetry-repository.ts";
 import { transaction } from "../storage/transaction.ts";
-import { logAlertEvent, type AlertService } from "./alert-service.ts";
+import type { AlertService } from "./alert-service.ts";
 import type { Clock } from "./clock.ts";
+import { toFleetEvent, type EventBus } from "./event-bus.ts";
 import type { FleetStore } from "./fleet-store.ts";
-import type { Logger } from "./logger.ts";
 
 export type IngestSummary = {
   /** Newer than the robot's snapshot: stored and applied. */
@@ -29,7 +29,7 @@ export type IngestionDependencies = {
   alerts: AlertService;
   clock: Clock;
   rules: Rules;
-  logger: Logger;
+  events: EventBus;
 };
 
 export class IngestionService {
@@ -40,7 +40,7 @@ export class IngestionService {
   }
 
   ingest(messages: readonly Telemetry[]): IngestSummary {
-    const { db, store, telemetry, robots, alerts, clock, rules, logger } = this.deps;
+    const { db, store, telemetry, robots, alerts, clock, rules, events } = this.deps;
     const now = clock();
     const summary: IngestSummary = { accepted: 0, late: 0, duplicates: 0, rejected: [] };
 
@@ -75,9 +75,12 @@ export class IngestionService {
       return [...updated.values()].flatMap((state) => alerts.evaluate(state, now));
     });
 
-    // Only after the commit, so memory and logs never show what the database does not have.
-    updated.forEach((state) => store.set(state));
-    alertEvents.forEach((event) => logAlertEvent(logger, event));
+    // Only after the commit, so memory and subscribers never see what the database does not have.
+    updated.forEach((state) => {
+      store.set(state);
+      events.publish({ type: "robot.updated", robot: state });
+    });
+    alertEvents.forEach((event) => events.publish(toFleetEvent(event)));
     return summary;
   }
 }

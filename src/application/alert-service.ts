@@ -3,7 +3,6 @@ import { evaluateAlerts, type Alert, type AlertChange, type AlertType } from "..
 import type { RobotState } from "../domain/fleet-state.ts";
 import type { Rules } from "../domain/rules.ts";
 import type { AlertRepository } from "../storage/alert-repository.ts";
-import type { Logger } from "./logger.ts";
 
 export type AlertEvent = {
   kind: "opened" | "escalated" | "resolved";
@@ -75,13 +74,4 @@ function findOpen(open: readonly Alert[], type: AlertType): Alert {
   // The domain only escalates or resolves alerts it was given as open.
   if (alert === undefined) throw new Error(`No open ${type} alert to update`);
   return alert;
-}
-
-export function logAlertEvent(logger: Logger, { kind, alert }: AlertEvent): void {
-  const fields = { alertId: alert.id, robotId: alert.robotId, type: alert.type, severity: alert.severity };
-  if (kind === "resolved") {
-    logger.info(fields, "alert resolved");
-  } else {
-    logger.warn(fields, `alert ${kind}: ${alert.message}`);
-  }
 }

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AlertService } from "../../src/application/alert-service.ts";
+import { EventBus, type FleetEvent } from "../../src/application/event-bus.ts";
 import { FleetStore } from "../../src/application/fleet-store.ts";
 import { Watchdog } from "../../src/application/watchdog.ts";
 import { DEFAULT_RULES } from "../../src/domain/rules.ts";
@@ -18,16 +19,20 @@ function setup(robots: RobotState[] = [makeRobotState()]) {
   robots.forEach((robot) => store.set(robot));
   const alertRepository = new AlertRepository(db);
   const clock = { now: T0 };
+  const events = new EventBus(silentLogger);
+  const published: FleetEvent[] = [];
+  events.subscribe((event) => published.push(event));
   const watchdog = new Watchdog({
     db,
     store,
     alerts: new AlertService({ alerts: alertRepository, rules }),
     clock: () => clock.now,
     rules,
+    events,
     logger: silentLogger,
   });
   const openAlertTypes = () => alertRepository.listOpen().map((alert) => alert.type);
-  return { db, store, alertRepository, clock, watchdog, openAlertTypes };
+  return { db, store, alertRepository, clock, watchdog, openAlertTypes, published };
 }
 
 describe("Watchdog", () => {
@@ -58,6 +63,22 @@ describe("Watchdog", () => {
     watchdog.tick();
     expect(store.get("robot-1")?.connectivity).toBe("offline");
     expect(openAlertTypes()).toEqual(["OFFLINE"]);
+  });
+
+  it("publishes connectivity changes and the alerts they cause", () => {
+    const { watchdog, clock, published } = setup([makeRobotState({ lastSeenAt: GRACE_OVER })]);
+
+    clock.now = GRACE_OVER + rules.staleAfterMs;
+    watchdog.tick();
+    clock.now = GRACE_OVER + rules.offlineAfterMs;
+    watchdog.tick();
+    watchdog.tick();
+
+    expect(published.map((event) => (event.type === "robot.updated" ? event.robot.connectivity : event.type))).toEqual([
+      "stale",
+      "offline",
+      "alert.opened",
+    ]);
   });
 
   it("does not open the same OFFLINE alert twice", () => {

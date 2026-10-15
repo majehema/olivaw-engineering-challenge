@@ -2,8 +2,9 @@ import type { DatabaseSync } from "node:sqlite";
 import { refreshConnectivity } from "../domain/fleet-state.ts";
 import type { Rules } from "../domain/rules.ts";
 import { transaction } from "../storage/transaction.ts";
-import { logAlertEvent, type AlertService } from "./alert-service.ts";
+import type { AlertService } from "./alert-service.ts";
 import type { Clock } from "./clock.ts";
+import { toFleetEvent, type EventBus } from "./event-bus.ts";
 import type { FleetStore } from "./fleet-store.ts";
 import type { Logger } from "./logger.ts";
 
@@ -13,6 +14,7 @@ export type WatchdogDependencies = {
   alerts: AlertService;
   clock: Clock;
   rules: Rules;
+  events: EventBus;
   logger: Logger;
 };
 
@@ -49,7 +51,7 @@ export class Watchdog {
   }
 
   tick(): void {
-    const { db, store, alerts, clock, rules, logger } = this.deps;
+    const { db, store, alerts, clock, rules, events, logger } = this.deps;
     const now = clock();
 
     // After a restart every robot looks silent: the server cannot tell a robot's
@@ -65,12 +67,13 @@ export class Watchdog {
       .filter(({ before, after }) => before !== after || graceJustEnded);
     if (changed.length === 0) return;
 
-    const events = transaction(db, () =>
+    const alertEvents = transaction(db, () =>
       changed.flatMap(({ after }) => alerts.evaluate(after, now, { allowOfflineAlerts: graceOver })),
     );
 
     for (const { before, after } of changed) {
       store.set(after);
+      events.publish({ type: "robot.updated", robot: after });
       if (before.connectivity !== after.connectivity) {
         logger.info(
           { robotId: after.robotId, from: before.connectivity, to: after.connectivity },
@@ -78,6 +81,6 @@ export class Watchdog {
         );
       }
     }
-    events.forEach((event) => logAlertEvent(logger, event));
+    alertEvents.forEach((event) => events.publish(toFleetEvent(event)));
   }
 }
