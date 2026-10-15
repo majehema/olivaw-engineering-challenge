@@ -23,3 +23,18 @@ export const DEFAULT_RULES: Rules = {
     recoverAbove: 25,
   },
 };
+
+/** Throws if the thresholds contradict each other. Returns the rules unchanged otherwise. */
+export function validateRules(rules: Rules): Rules {
+  const { warningBelow, criticalBelow, recoverAbove } = rules.battery;
+  const problems = [
+    rules.staleAfterMs < rules.offlineAfterMs ? null : "staleAfterMs must be lower than offlineAfterMs",
+    criticalBelow < warningBelow ? null : "battery criticalBelow must be lower than warningBelow",
+    warningBelow <= recoverAbove ? null : "battery recoverAbove must not be lower than warningBelow",
+  ].filter((problem) => problem !== null);
+
+  if (problems.length > 0) {
+    throw new Error(`Invalid rules: ${problems.join("; ")}`);
+  }
+  return rules;
+}
