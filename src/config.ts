@@ -2,6 +2,7 @@ export type Config = {
   host: string;
   port: number;
   logLevel: string;
+  databasePath: string;
 };
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -10,6 +11,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     host: env.HOST ?? "0.0.0.0",
     port: parsePort(env.PORT ?? "3000"),
     logLevel: env.LOG_LEVEL ?? "info",
+    databasePath: env.DATABASE_PATH ?? "data/fleet.db",
   };
 }
 
