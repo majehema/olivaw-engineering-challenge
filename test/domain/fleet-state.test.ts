@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ingestTelemetry, refreshConnectivity } from "../../src/domain/fleet-state.ts";
+import { ingestTelemetry, refreshConnectivity, restoreRobotState } from "../../src/domain/fleet-state.ts";
 import { DEFAULT_RULES } from "../../src/domain/rules.ts";
 import { makeRobotState, makeTelemetry, T0 } from "../fixtures.ts";
 
@@ -67,6 +67,21 @@ describe("ingestTelemetry", () => {
     const ahead = makeTelemetry({ timestamp: T0 + rules.maxClockSkewMs });
 
     expect(ingestTelemetry(undefined, ahead, T0, rules).kind).toBe("applied");
+  });
+});
+
+describe("restoreRobotState", () => {
+  it("derives connectivity from how long ago the robot was last seen", () => {
+    const telemetry = makeTelemetry();
+
+    expect(restoreRobotState(telemetry, T0, T0 + 1_000, rules).connectivity).toBe("online");
+    expect(restoreRobotState(telemetry, T0, T0 + 60_000, rules)).toEqual({
+      robotId: "robot-1",
+      siteId: "site-a",
+      lastTelemetry: telemetry,
+      lastSeenAt: T0,
+      connectivity: "offline",
+    });
   });
 });
 

@@ -51,6 +51,22 @@ export function ingestTelemetry(
   return { kind, state };
 }
 
+/** Rebuilds a robot's state from storage, e.g. after a restart. Connectivity is derived, never stored. */
+export function restoreRobotState(
+  lastTelemetry: Telemetry,
+  lastSeenAt: number,
+  now: number,
+  rules: Rules,
+): RobotState {
+  return {
+    robotId: lastTelemetry.robotId,
+    siteId: lastTelemetry.siteId,
+    lastTelemetry,
+    lastSeenAt,
+    connectivity: connectivityAt(lastSeenAt, now, rules),
+  };
+}
+
 /** Returns the same object when connectivity is unchanged, so callers can detect transitions by reference. */
 export function refreshConnectivity(state: RobotState, now: number, rules: Rules): RobotState {
   const connectivity = connectivityAt(state.lastSeenAt, now, rules);
