@@ -302,14 +302,48 @@ Invalid values, or thresholds that contradict each other, **stop the server at s
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/telemetry` | Ingest one message or a batch (max 500). Returns `{ accepted, duplicates, late, rejected[] }`. |
-| `GET` | `/fleet/summary` | Counts by connectivity, by site, and active alerts by severity. |
-| `GET` | `/robots?siteId=&connectivity=` | Current state of the fleet, filterable. |
-| `GET` | `/robots/:id` | Current state of one robot plus its open alerts. |
-| `GET` | `/robots/:id/history?from=&to=&limit=` | Telemetry history for a time range. |
-| `GET` | `/alerts?active=true&robotId=` | Alerts, open or all. |
+| `POST` | `/telemetry` | Ingest one message or a batch (max 500). Returns `{ accepted, late, duplicates, rejected[] }`. |
+| `GET` | `/fleet/summary` | Counts by connectivity, by site, and active alerts by severity, with `generatedAt`. |
+| `GET` | `/robots?siteId=&connectivity=` | Current state of every robot, with its active alerts, sorted by id. |
+| `GET` | `/robots/:id` | Current state of one robot plus its active alerts. `404` if it never reported. |
+| `GET` | `/robots/:id/history?from=&to=&limit=` | Telemetry history, newest first. `limit` defaults to 100 (max 1000). |
+| `GET` | `/alerts?active=&robotId=&limit=` | Alerts, most recently opened first. `limit` defaults to 100 (max 1000). |
 | `GET` | `/events` | Live stream ([Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)): `robot.updated`, `robot.connectivity`, `alert.opened`, `alert.resolved`. |
-| `GET` | `/health` | Liveness and readiness (database reachable). |
+| `GET` | `/health` | Liveness and readiness (database reachable); `503` otherwise. |
+
+- **Timestamps are ISO 8601 (UTC) in every response**; epoch milliseconds stay inside the server.
+- **Current state is served from memory**; history and alerts from SQLite. Each robot in `/robots` carries its active alerts (read for the whole fleet in a single query), so a client can show at a glance which robots need attention.
+- **Every list is bounded** by `limit`, so a single request cannot read a whole table.
+- **Errors** share one shape: `{ error, issues?: [{ path, message }] }`, with `400` for invalid input and `404` for unknown robots.
+- Connectivity in responses is the value maintained by the watchdog, so it is at most one watchdog interval (1 s) old, and always consistent with the alerts.
+
+Example: `GET /robots/r1`
+
+```json
+{
+  "robotId": "r1",
+  "siteId": "warehouse-1",
+  "connectivity": "online",
+  "lastSeenAt": "2026-10-15T17:55:36.608Z",
+  "telemetry": {
+    "timestamp": "2026-10-15T17:55:36.373Z",
+    "battery": 12,
+    "position": { "x": 3.5, "y": 7 },
+    "status": "moving"
+  },
+  "activeAlerts": [
+    {
+      "id": "42b4c729-622d-44ed-bea5-0dc5f68b2e1e",
+      "robotId": "r1",
+      "type": "LOW_BATTERY",
+      "severity": "warning",
+      "message": "Battery at 12%",
+      "openedAt": "2026-10-15T17:55:36.608Z",
+      "resolvedAt": null
+    }
+  ]
+}
+```
 
 SSE was chosen over WebSockets because the stream is one-directional (server to client), runs over plain HTTP, and browsers reconnect automatically via [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource).
 
