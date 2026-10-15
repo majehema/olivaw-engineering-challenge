@@ -349,19 +349,47 @@ SSE was chosen over WebSockets because the stream is one-directional (server to 
 
 ## 8. Simulator
 
-A separate Node.js process that spawns N virtual robots spread across sites. Each one sends telemetry about once per second with a random walk for position and realistic battery drain and charge cycles.
+A separate Node.js process (`simulator/`) that plays N robots spread across sites. It shares only **types** with the server (erased at runtime), never server code: it stands in for a separate system.
 
-Some robots are assigned **scenarios** to exercise the server's rules:
+```mermaid
+flowchart LR
+    subgraph ROBOT["SimulatedRobot (one per robot)"]
+        direction TB
+        PHY["Physics (model.ts)<br/>battery, position, status<br/>always advance"]
+        DEL["Delivery (delivery.ts)<br/>what reaches the network:<br/>immediate, intermittent,<br/>buffered, skewed clock"]
+        PHY --> DEL
+    end
+    ROBOT -->|"messages"| GW["Batch per site<br/>(like a site gateway)"]
+    GW --> Q["Sender queue<br/>(at-least-once, bounded)"]
+    Q -->|"POST /telemetry<br/>retry in order on failure"| SRV["Server"]
+```
+
+- **Physics** (`simulator/model.ts`): a random walk inside a 100 m × 100 m site, battery drain while working (a third of it while idle), charge cycles, and faults. A robot keeps "living" while it is not transmitting.
+- **Delivery** (`simulator/delivery.ts`): each scenario decides which messages leave the robot and when.
+- **One batch per site per tick**, as a site gateway would: with 20 robots that is 3 requests per second instead of 20.
+- **At-least-once delivery**: a batch stays queued until the server confirms it and is retried in order, so a server outage loses no data (safe because ingestion is idempotent). The queue is bounded (five minutes of batches) and drops the oldest beyond that. A `4xx` drops the batch, since retrying an invalid batch would fail forever.
+- **Reproducible runs**: randomness comes from a seeded generator; `SEED` replays the exact same fleet.
+
+The first robots get one **scenario** each; the rest are `normal`:
 
 | Scenario | Behaviour | Exercises |
 |---|---|---|
-| `normal` | Steady 1 Hz telemetry | Happy path |
-| `silent` | Stops sending for ~45 s, then resumes | `stale`, then `offline`, then the OFFLINE alert opens and resolves |
-| `laggy` | Buffers messages and sends them late and shuffled | Out-of-order and late-data handling |
-| `low-battery` | Drains fast, then charges | LOW_BATTERY warning, critical, and hysteresis recovery |
-| `faulty` | Occasionally reports `status: "error"` | ROBOT_ERROR alert |
+| `normal` | Steady 1 Hz telemetry; charges at 25 %, before the warning threshold | Happy path: no alerts |
+| `silent` | 60 s online, then 45 s of silence, repeatedly | `stale`, then `offline` and the OFFLINE alert, then recovery |
+| `laggy` | Buffers messages for 10 s and sends them shuffled, repeating one from the previous flush | Late, out-of-order and duplicate data; `stale` between flushes |
+| `low-battery` | Drains in about a minute, charges only at 5 % | LOW_BATTERY warning, escalation to critical, hysteresis recovery |
+| `faulty` | A fault roughly every 30 s, lasting about 10 s | ROBOT_ERROR open and resolve |
+| `skewed-clock` | Clock two minutes ahead | Rejection of future timestamps (the robot never appears) |
 
-Configured with environment variables: `SERVER_URL`, `ROBOT_COUNT`, `SITES`.
+| Variable | Default |
+|---|---|
+| `SERVER_URL` | `http://localhost:3000` |
+| `ROBOT_COUNT` | `20` |
+| `SITES` | `warehouse-a,warehouse-b,warehouse-c` |
+| `TICK_MS` | `1000` |
+| `SEED` | random (printed at startup) |
+
+Every 10 seconds the simulator logs what the server answered: accepted, late, duplicate and rejected messages, failed requests, dropped and queued batches.
 
 ## 9. Tech stack
 
@@ -395,7 +423,12 @@ Why SQLite: it needs no separate server, so the project runs with one command, a
 │   ├── api/               # Fastify routes (REST + SSE)
 │   ├── config.ts
 │   └── server.ts          # composition root
-├── simulator/
+├── simulator/             # robot fleet: physics, delivery scenarios, sender
+│   ├── model.ts
+│   ├── delivery.ts
+│   ├── robot.ts
+│   ├── fleet.ts
+│   ├── sender.ts
 │   └── index.ts
 ├── test/                  # unit + API integration tests
 ├── docker-compose.yml
