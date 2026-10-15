@@ -2,6 +2,7 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 import type { IngestionService } from "../application/ingestion-service.ts";
 import { telemetrySchema } from "../domain/telemetry.ts";
+import { badRequest } from "./validation.ts";
 
 export const MAX_BATCH_SIZE = 500;
 
@@ -21,15 +22,7 @@ export const telemetryRoutes: FastifyPluginAsync<TelemetryRoutesOptions> = async
 
     // A malformed payload is a producer bug, so the whole request is rejected
     // loudly instead of silently dropping the invalid messages.
-    if (!parsed.success) {
-      return reply.code(400).send({
-        error: "Invalid telemetry",
-        issues: parsed.error.issues.map((issue) => ({
-          path: issue.path.join("."),
-          message: issue.message,
-        })),
-      });
-    }
+    if (!parsed.success) return badRequest(reply, "Invalid telemetry", parsed.error);
 
     return ingestion.ingest(parsed.data);
   });

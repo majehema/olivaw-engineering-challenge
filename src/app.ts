@@ -1,9 +1,13 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import type { DatabaseSync } from "node:sqlite";
+import { alertRoutes } from "./api/alerts.ts";
+import { fleetRoutes } from "./api/fleet.ts";
 import { healthRoutes } from "./api/health.ts";
+import { robotRoutes } from "./api/robots.ts";
 import { telemetryRoutes } from "./api/telemetry.ts";
 import { AlertService } from "./application/alert-service.ts";
 import { systemClock, type Clock } from "./application/clock.ts";
+import { FleetQueries } from "./application/fleet-queries.ts";
 import { FleetStore } from "./application/fleet-store.ts";
 import { IngestionService } from "./application/ingestion-service.ts";
 import { Watchdog } from "./application/watchdog.ts";
@@ -35,16 +39,21 @@ export function buildApp({
 
   const telemetry = new TelemetryRepository(db);
   const robots = new RobotRepository(db);
+  const alertRepository = new AlertRepository(db);
   const store = FleetStore.restore(robots.loadAll(), clock(), rules);
-  const alerts = new AlertService({ alerts: new AlertRepository(db), rules });
+  const alerts = new AlertService({ alerts: alertRepository, rules });
   const ingestion = new IngestionService({ db, store, telemetry, robots, alerts, clock, rules, logger });
   const watchdog = new Watchdog({ db, store, alerts, clock, rules, logger });
+  const queries = new FleetQueries({ store, telemetry, alerts: alertRepository });
 
   app.addHook("onReady", async () => watchdog.start(watchdogIntervalMs));
   app.addHook("onClose", async () => watchdog.stop());
 
   app.register(healthRoutes, { db });
   app.register(telemetryRoutes, { ingestion });
+  app.register(fleetRoutes, { queries, clock });
+  app.register(robotRoutes, { queries });
+  app.register(alertRoutes, { queries });
 
   return app;
 }
