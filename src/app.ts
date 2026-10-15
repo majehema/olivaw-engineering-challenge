@@ -1,6 +1,7 @@
 import Fastify, { type FastifyInstance } from "fastify";
 import type { DatabaseSync } from "node:sqlite";
 import { alertRoutes } from "./api/alerts.ts";
+import { eventRoutes } from "./api/events.ts";
 import { fleetRoutes } from "./api/fleet.ts";
 import { healthRoutes } from "./api/health.ts";
 import { robotRoutes } from "./api/robots.ts";
@@ -60,6 +61,7 @@ export function buildApp({
   app.register(fleetRoutes, { queries, clock });
   app.register(robotRoutes, { queries });
   app.register(alertRoutes, { queries });
+  app.register(eventRoutes, { events, queries });
 
   return app;
 }

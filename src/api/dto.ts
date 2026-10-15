@@ -26,13 +26,20 @@ export function alertDto(alert: Alert) {
   };
 }
 
-export function robotDto(robot: RobotState, activeAlerts: readonly Alert[]) {
+/** A robot's state without its alerts: the payload of `robot.updated` events. */
+export function robotStateDto(robot: RobotState) {
   return {
     robotId: robot.robotId,
     siteId: robot.siteId,
     connectivity: robot.connectivity,
     lastSeenAt: toIso(robot.lastSeenAt),
     telemetry: telemetryDto(robot.lastTelemetry),
+  };
+}
+
+export function robotDto(robot: RobotState, activeAlerts: readonly Alert[]) {
+  return {
+    ...robotStateDto(robot),
     activeAlerts: activeAlerts.map(alertDto),
   };
 }
