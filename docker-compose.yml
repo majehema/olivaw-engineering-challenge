@@ -1,0 +1,33 @@
+services:
+  server:
+    build: .
+    image: olivaw-fleet-telemetry
+    # tini as PID 1: forwards SIGTERM to Node so the server shuts down gracefully.
+    init: true
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_PATH: /app/data/fleet.db
+      LOG_LEVEL: info
+    volumes:
+      - fleet-data:/app/data
+    restart: unless-stopped
+
+  simulator:
+    image: olivaw-fleet-telemetry
+    init: true
+    command: ["node", "simulator/index.ts"]
+    environment:
+      SERVER_URL: http://server:3000
+      ROBOT_COUNT: 20
+      SITES: warehouse-a,warehouse-b,warehouse-c
+    # The healthcheck is defined in the image; the healthcheck below only disables it for the simulator.
+    healthcheck:
+      disable: true
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  fleet-data:
