@@ -1,6 +1,7 @@
 import type { Rules } from "./rules.ts";
 
-export type Connectivity = "online" | "stale" | "offline";
+export const CONNECTIVITY_STATES = ["online", "stale", "offline"] as const;
+export type Connectivity = (typeof CONNECTIVITY_STATES)[number];
 
 // Measured with the server clock: a robot's own clock may be wrong, and
 // "when did we last hear from it" is a question about the server's view.
