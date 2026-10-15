@@ -308,7 +308,7 @@ Invalid values, or thresholds that contradict each other, **stop the server at s
 | `GET` | `/robots/:id` | Current state of one robot plus its active alerts. `404` if it never reported. |
 | `GET` | `/robots/:id/history?from=&to=&limit=` | Telemetry history, newest first. `limit` defaults to 100 (max 1000). |
 | `GET` | `/alerts?active=&robotId=&limit=` | Alerts, most recently opened first. `limit` defaults to 100 (max 1000). |
-| `GET` | `/events` | Live stream ([Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)): `robot.updated`, `robot.connectivity`, `alert.opened`, `alert.resolved`. |
+| `GET` | `/events?robotId=` | Live stream ([Server-Sent Events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)): a `snapshot`, then `robot.updated` and `alert.opened` / `alert.escalated` / `alert.resolved`. |
 | `GET` | `/health` | Liveness and readiness (database reachable); `503` otherwise. |
 
 - **Timestamps are ISO 8601 (UTC) in every response**; epoch milliseconds stay inside the server.
@@ -345,7 +345,46 @@ Example: `GET /robots/r1`
 }
 ```
 
+### Live stream (`GET /events`)
+
 SSE was chosen over WebSockets because the stream is one-directional (server to client), runs over plain HTTP, and browsers reconnect automatically via [`EventSource`](https://developer.mozilla.org/en-US/docs/Web/API/EventSource).
+
+```mermaid
+sequenceDiagram
+    participant C as Client (EventSource)
+    participant E as GET /events
+    participant B as Event bus
+    participant P as Ingestion / Watchdog
+
+    C->>E: connect (optional ?robotId=)
+    E-->>C: event: snapshot (every robot + active alerts)
+    E->>B: subscribe (same synchronous step as the snapshot)
+    loop after each commit
+        P->>B: publish robot.updated / alert.*
+        B-->>E: event
+        E-->>C: event: robot.updated / alert.opened / ...
+    end
+    E-->>C: ": heartbeat" comment every 15 s
+    C--xE: disconnect → unsubscribe
+```
+
+| Event | Payload |
+|---|---|
+| `snapshot` | `{ robots: [...] }`, same shape as `GET /robots` |
+| `robot.updated` | Robot state without alerts (new telemetry, `lastSeenAt` or connectivity change) |
+| `alert.opened`, `alert.escalated`, `alert.resolved` | The alert, same shape as `GET /alerts` |
+
+```
+event: robot.updated
+data: {"robotId":"robot-003","siteId":"warehouse-c","connectivity":"online","lastSeenAt":"…","telemetry":{…}}
+```
+
+- **Event bus:** ingestion and the watchdog publish to an in-process `EventBus` **after their transaction commits**. Logging is one more subscriber, so services know nothing about SSE or logs. A failing subscriber is logged and does not affect the others.
+- **Snapshot first:** a client gets the current state and every change after it, with no gap: the snapshot and the subscription happen in the same synchronous step. No need for `Last-Event-ID` replay: on reconnect, `EventSource` simply gets a new snapshot.
+- **Slow clients:** if a client stops reading and more than 1 MB is buffered for it, the server closes the connection instead of letting memory grow; the client reconnects and resynchronises from the snapshot.
+- **Heartbeat:** a comment line every 15 s keeps proxies and load balancers from closing an idle connection.
+- **Shutdown:** a `preClose` hook ends open streams, which would otherwise keep the server from closing.
+- **Scale:** the bus is in-process, so every client must be connected to the instance that ingests. With several instances, the bus would be replaced by Redis Pub/Sub, NATS or Kafka.
 
 ## 8. Simulator
 
@@ -418,7 +457,7 @@ Why SQLite: it needs no separate server, so the project runs with one command, a
 │   │   ├── connectivity.ts
 │   │   └── alerts.ts
 │   ├── application/       # orchestrates domain + storage: in-memory fleet store,
-│   │                      # ingestion service, watchdog, alert engine
+│   │                      # ingestion, watchdog, alert engine, queries, event bus
 │   ├── storage/           # SQLite repositories and migrations
 │   ├── api/               # Fastify routes (REST + SSE)
 │   ├── config.ts
