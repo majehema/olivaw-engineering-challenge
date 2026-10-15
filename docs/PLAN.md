@@ -93,28 +93,35 @@ sequenceDiagram
     participant B as Event bus / SSE
 
     R->>API: JSON (one message or batch)
-    API->>V: parse body
+    API->>V: parse body (single message → batch of one)
     alt invalid payload
-        V-->>R: 400 Bad Request + details
+        V-->>R: 400 Bad Request + field-level issues
     end
+    API->>I: ingest(batch)
+    I->>I: now = clock() (once per batch)
+    I->>DB: BEGIN
     loop each message
-        I->>I: reject if timestamp > now + 30s (clock skew)
-        I->>DB: INSERT OR IGNORE (robotId, timestamp)
-        alt duplicate
-            I->>I: count as duplicate, skip
-        else newer than current state
-            I->>S: replace snapshot, lastSeenAt = server time
-            I->>A: evaluate battery / error rules
-            A->>DB: open or resolve alerts
-            S-->>B: robot.updated
-            A-->>B: alert.opened / alert.resolved
-        else older than current state (late data)
-            I->>S: refresh lastSeenAt only
-            Note over I,S: history keeps it, the snapshot is not rolled back
+        I->>I: classify against the snapshot (domain)
+        alt timestamp > now + 30s (clock skew)
+            I->>I: add to rejected[] with its index
+        else applied / late / duplicate
+            I->>DB: INSERT OR IGNORE into telemetry
+            Note over I,DB: 0 rows changed → duplicate (producer retry)
+            I->>DB: upsert robots row (snapshot pointer, lastSeenAt)
+            I->>A: evaluate alert rules (milestone 5)
+            A->>DB: open / escalate / resolve alerts
         end
     end
-    API-->>R: 200 OK {accepted, duplicates, late, rejected[]}
+    I->>DB: COMMIT
+    I->>S: apply new snapshots (only after commit)
+    S-->>B: robot.updated, alert.* events
+    I-->>API: summary
+    API-->>R: 200 OK {accepted, late, duplicates, rejected[]}
 ```
+
+- **Late data** (older than the snapshot) is stored in history but never rolls the snapshot back; it still refreshes `lastSeenAt`.
+- **Memory is updated after the commit**, so the in-memory state never shows data the database does not have. If the database fails, the whole batch rolls back and the producer retries; ingestion is idempotent, so retries are safe.
+- An **invalid payload rejects the whole request** (a producer bug should be loud), while a future timestamp rejects only that message (an operational problem with one robot's clock).
 
 ### 4.2 Connectivity watchdog
 
@@ -335,7 +342,8 @@ Why SQLite: it needs no separate server, so the project runs with one command, a
 │   │   ├── fleet-state.ts # snapshot updates, late-data handling
 │   │   ├── connectivity.ts
 │   │   └── alerts.ts
-│   ├── ingestion/         # orchestrates domain + storage + events
+│   ├── application/       # orchestrates domain + storage: in-memory fleet store,
+│   │                      # ingestion service, watchdog, alert engine
 │   ├── storage/           # SQLite repositories and migrations
 │   ├── api/               # Fastify routes (REST + SSE)
 │   ├── config.ts
