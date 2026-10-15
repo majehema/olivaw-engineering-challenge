@@ -165,7 +165,7 @@ type RobotState = {
   robotId: string;
   siteId: string;
   lastTelemetry: Telemetry;       // most recent by robot timestamp
-  lastSeenAt: Date;               // server clock at last receipt
+  lastSeenAt: number;             // server clock at last receipt, epoch ms
   connectivity: "online" | "stale" | "offline";
 };
 
@@ -175,10 +175,12 @@ type Alert = {
   type: "LOW_BATTERY" | "OFFLINE" | "ROBOT_ERROR";
   severity: "warning" | "critical";
   message: string;
-  openedAt: Date;
-  resolvedAt: Date | null;
+  openedAt: number;               // epoch ms
+  resolvedAt: number | null;
 };
 ```
+
+Inside the server, all times are **epoch milliseconds** (`number`): they compare with `<`, store as SQLite integers and carry no time zone ambiguity. ISO 8601 strings are used only at the API boundary.
 
 Zod schemas are the single source of truth: TypeScript types are inferred from them with `z.infer`, because TypeScript types do not exist at runtime and incoming data must be validated.
 
@@ -229,18 +231,20 @@ All rules live in `src/domain/` as **pure functions with an injected clock**, so
 | State | Condition (server time since last message) |
 |---|---|
 | `online` | < 5 s |
-| `stale` | 5 s to 30 s |
-| `offline` | > 30 s, opens an `OFFLINE` alert |
+| `stale` | ≥ 5 s and < 30 s |
+| `offline` | ≥ 30 s, opens an `OFFLINE` alert |
 
 ### 6.3 Alerts
 
-| Type | Opens | Escalates | Resolves |
-|---|---|---|---|
-| `LOW_BATTERY` | battery < 20 % (warning) | battery < 10 % (critical) | battery > 25 % (**hysteresis**) |
-| `OFFLINE` | watchdog marks robot offline | n/a | robot reports again |
-| `ROBOT_ERROR` | `status = "error"` | n/a | status is no longer `error` |
+| Type | Severity | Opens | Escalates | Resolves |
+|---|---|---|---|---|
+| `LOW_BATTERY` | warning / critical | battery < 20 % (warning), < 10 % (critical) | warning → critical when battery < 10 % | battery > 25 % (**hysteresis**) |
+| `OFFLINE` | critical | watchdog marks robot `offline` | n/a | robot is `online` again (`stale` does not resolve it) |
+| `ROBOT_ERROR` | critical | `status = "error"` | n/a | status is no longer `error` |
 
-Hysteresis prevents an alert from flapping when the battery hovers around the threshold (19.9 % → 20.1 % → 19.8 %…).
+- **Hysteresis** prevents an alert from flapping when the battery hovers around the threshold (19.9 % → 20.1 % → 19.8 %…).
+- **Severity only escalates** while an alert is open: it records the worst state reached. The robot's current battery is always available on the robot itself.
+- Rules are **idempotent**: evaluating the same state twice yields no changes, so they run on every message and on every watchdog tick.
 
 ### 6.4 Configuration
 
