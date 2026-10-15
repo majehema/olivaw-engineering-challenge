@@ -187,6 +187,7 @@ Zod schemas are the single source of truth: TypeScript types are inferred from t
 ### Storage schema (SQLite)
 
 ```sql
+-- Append-only history
 CREATE TABLE telemetry (
   robot_id     TEXT    NOT NULL,
   site_id      TEXT    NOT NULL,
@@ -197,6 +198,15 @@ CREATE TABLE telemetry (
   pos_y        REAL    NOT NULL,
   status       TEXT    NOT NULL,
   PRIMARY KEY (robot_id, ts)      -- natural key: deduplicates retries
+) WITHOUT ROWID;
+
+-- Current snapshot pointer: one row per robot
+CREATE TABLE robots (
+  robot_id      TEXT    PRIMARY KEY,
+  site_id       TEXT    NOT NULL,
+  last_ts       INTEGER NOT NULL,
+  last_seen_at  INTEGER NOT NULL,
+  FOREIGN KEY (robot_id, last_ts) REFERENCES telemetry (robot_id, ts)
 );
 
 CREATE TABLE alerts (
@@ -208,10 +218,18 @@ CREATE TABLE alerts (
   opened_at    INTEGER NOT NULL,
   resolved_at  INTEGER
 );
-CREATE INDEX idx_alerts_open ON alerts (robot_id, type) WHERE resolved_at IS NULL;
+-- The database enforces the domain invariant too: one open alert per robot and type
+CREATE UNIQUE INDEX alerts_one_open_per_type ON alerts (robot_id, type) WHERE resolved_at IS NULL;
 ```
 
-SQLite runs in [WAL mode](https://www.sqlite.org/wal.html) so reads do not block the writer.
+- **`robots` table:** rebuilding the in-memory state on startup reads one row per robot (O(robots)) instead of deriving the latest record from the whole history (O(messages)). The foreign key guarantees the pointer always references stored telemetry.
+- **Migrations:** an ordered list of SQL scripts; [`PRAGMA user_version`](https://www.sqlite.org/pragma.html#pragma_user_version) records how many have been applied. Each runs in a transaction.
+- **[WAL mode](https://www.sqlite.org/wal.html)** with `synchronous = NORMAL`: cheaper frequent small writes, and other processes (e.g. the `sqlite3` CLI) can read while the server writes. A power loss may drop the last commits but cannot corrupt the file.
+- **Driver:** Node's built-in [`node:sqlite`](https://nodejs.org/api/sqlite.html) module. It removes a native dependency (`better-sqlite3` compiles C++ on install), which keeps the Docker image simple. Trade-off: its stability index is *1.2 Release candidate* in Node 24. Its API is synchronous like `better-sqlite3`; queries take microseconds on a local file, so blocking the event loop briefly is cheaper than the overhead of async I/O.
+
+### Restart behaviour
+
+On startup the server loads every robot from the `robots` table and derives its connectivity from `last_seen_at`. After downtime, every robot will look `offline`: the server cannot tell a silent robot apart from its own outage. To avoid an alert storm on restart, the watchdog applies a **startup grace period** (`offlineAfterMs`) before opening new `OFFLINE` alerts; robots that report during that window simply come back online. Alerts that were already open before the restart are loaded from the database and stay open.
 
 ## 6. Business rules
 
@@ -299,7 +317,7 @@ Configured with environment variables: `SERVER_URL`, `ROBOT_COUNT`, `SITES`.
 | Language | TypeScript (strict mode) | [typescriptlang.org](https://www.typescriptlang.org/tsconfig/#strict) |
 | HTTP server | Fastify | [fastify.dev](https://fastify.dev/docs/latest/) |
 | Validation | Zod | [zod.dev](https://zod.dev/) |
-| Storage | SQLite via better-sqlite3 | [better-sqlite3](https://github.com/WiseLibs/better-sqlite3/blob/master/docs/api.md), [sqlite.org](https://www.sqlite.org/docs.html) |
+| Storage | SQLite via the built-in `node:sqlite` module | [nodejs.org](https://nodejs.org/api/sqlite.html), [sqlite.org](https://www.sqlite.org/docs.html) |
 | Tests | Vitest | [vitest.dev](https://vitest.dev/guide/) |
 | Packaging | Docker Compose | [docs.docker.com](https://docs.docker.com/compose/) |
 
